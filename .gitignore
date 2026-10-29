@@ -1,0 +1,16 @@
+build/
+cmake-build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+*.o
+*.a
+*.so
+*.so.*
+
+.idea/
+*.swp
+.DS_Store
