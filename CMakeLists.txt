@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 cmake_minimum_required(VERSION 3.16)
-project(lkbench C)
+project(lkbench VERSION 0.0.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -17,5 +17,7 @@ add_executable(lkbench
     ${LK_TEST_SOURCES})
 
 target_include_directories(lkbench PRIVATE src)
-target_compile_definitions(lkbench PRIVATE _POSIX_C_SOURCE=200809L)
+target_compile_definitions(lkbench PRIVATE
+    _POSIX_C_SOURCE=200809L
+    LKBENCH_VERSION="${PROJECT_VERSION}")
 target_compile_options(lkbench PRIVATE -Wall -Wextra -Wpedantic)

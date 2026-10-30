@@ -5,6 +5,10 @@
 
 #include <stddef.h>
 
+#ifndef LKBENCH_VERSION
+#define LKBENCH_VERSION "dev"
+#endif
+
 struct LkStats {
     double minNs;
     double medianNs;
@@ -22,6 +26,7 @@ struct LkTestCase {
 void lkRegisterTestCase(struct LkTestCase *testCase);
 size_t lkTestCaseCount(void);
 struct LkTestCase *lkTestCaseAt(size_t index);
+int lkTestCaseMatches(const struct LkTestCase *testCase, const char *selector);
 int lkRunTestCase(const struct LkTestCase *testCase, struct LkStats *stats);
 
 #ifdef __has_attribute

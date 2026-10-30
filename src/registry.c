@@ -105,3 +105,14 @@ struct LkTestCase *lkTestCaseAt(size_t index) {
     sortRegistry();
     return index < testCaseCount ? testCases[index] : NULL;
 }
+
+int lkTestCaseMatches(const struct LkTestCase *testCase, const char *selector) {
+    size_t length = strlen(selector);
+
+    if (strcmp(testCase->id, selector) == 0) {
+        return 1;
+    }
+
+    return length > 0 && strncmp(testCase->id, selector, length) == 0 &&
+           testCase->id[length] == '.';
+}
