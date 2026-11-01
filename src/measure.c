@@ -3,16 +3,13 @@
 #include "lkbench.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
-#define BATCH_TARGET_NS (50LL * 1000 * 1000)
-#define MAX_BATCH_ITERS 16777216UL
-#define WARMUP_TARGET_NS (100LL * 1000 * 1000)
-#define SAMPLE_COUNT 5
-
-static int nowNs(int64_t *ns) {
+static int nowNs(uint64_t *ns) {
     struct timespec ts;
 
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -22,114 +19,141 @@ static int nowNs(int64_t *ns) {
         return -1;
     }
 
-    *ns = ((int64_t)ts.tv_sec * 1000000000LL) + (int64_t)ts.tv_nsec;
+    *ns = ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
     return 0;
 }
 
-static int measureBatch(const struct LkTestCase *testCase,
-                        unsigned long iterations, int64_t *elapsedNs) {
-    int64_t start;
-    int64_t end;
+static int warmup(const struct LkTestCase *testCase, uint64_t durationNs) {
+    uint64_t start;
 
+    if (durationNs == 0) {
+        return 0;
+    }
     if (nowNs(&start) != 0) {
         return -1;
     }
-    for (unsigned long i = 0; i < iterations; i++) {
-        testCase->test();
-    }
-    if (nowNs(&end) != 0) {
-        return -1;
-    }
-
-    *elapsedNs = end - start;
-    return 0;
-}
-
-static int calibrate(const struct LkTestCase *testCase,
-                     unsigned long *iterations) {
-    unsigned long candidates = 1000;
-    int64_t elapsedNs = 0;
 
     for (;;) {
-        if (measureBatch(testCase, candidates, &elapsedNs) != 0) {
+        uint64_t current;
+
+        testCase->test();
+        if (nowNs(&current) != 0) {
             return -1;
         }
-        if (elapsedNs >= BATCH_TARGET_NS || candidates >= MAX_BATCH_ITERS) {
+        if (current - start >= durationNs) {
             break;
         }
-        candidates *= 2;
     }
 
-    *iterations = candidates;
     return 0;
 }
 
-static int warmup(const struct LkTestCase *testCase, unsigned long iterations) {
-    int64_t totalNs = 0;
+static int collectSamples(const struct LkTestCase *testCase, uint64_t *samples,
+                          size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        uint64_t begin;
+        uint64_t end;
 
-    while (totalNs < WARMUP_TARGET_NS) {
-        int64_t elapsedNs = 0;
-
-        if (measureBatch(testCase, iterations, &elapsedNs) != 0) {
+        if (nowNs(&begin) != 0) {
             return -1;
         }
-        totalNs += elapsedNs;
-    }
-
-    return 0;
-}
-
-static void sortValues(double *values, int count) {
-    for (int i = 1; i < count; i++) {
-        double value = values[i];
-        int j = i - 1;
-
-        while (j >= 0 && values[j] > value) {
-            values[j + 1] = values[j];
-            j--;
-        }
-        values[j + 1] = value;
-    }
-}
-
-static int sampleLatency(const struct LkTestCase *testCase,
-                         unsigned long iterations, struct LkStats *stats) {
-    double values[SAMPLE_COUNT];
-
-    for (int i = 0; i < SAMPLE_COUNT; i++) {
-        int64_t elapsedNs = 0;
-
-        if (measureBatch(testCase, iterations, &elapsedNs) != 0) {
+        testCase->test();
+        if (nowNs(&end) != 0) {
             return -1;
         }
-        values[i] = (double)elapsedNs / (double)iterations;
+        samples[i] = end - begin;
     }
 
-    sortValues(values, SAMPLE_COUNT);
-    stats->minNs = values[0];
-    stats->medianNs = values[SAMPLE_COUNT / 2];
-    stats->samples = SAMPLE_COUNT;
     return 0;
 }
 
-int lkRunTestCase(const struct LkTestCase *testCase, struct LkStats *stats) {
-    unsigned long iterations = 0;
+static int compareSamples(const void *leftValue, const void *rightValue) {
+    uint64_t left = *(const uint64_t *)leftValue;
+    uint64_t right = *(const uint64_t *)rightValue;
+
+    return (left > right) - (left < right);
+}
+
+static double percentile(const uint64_t *sorted, size_t count,
+                         unsigned int percent) {
+    size_t rank = ((count * percent) + 99) / 100;
+
+    if (rank == 0) {
+        rank = 1;
+    }
+    if (rank > count) {
+        rank = count;
+    }
+    return (double)sorted[rank - 1];
+}
+
+static void computeStats(uint64_t *samples, size_t count,
+                         struct LkStats *stats) {
+    double sum = 0.0;
+
+    qsort(samples, count, sizeof(*samples), compareSamples);
+
+    stats->minNs = (double)samples[0];
+    stats->medianNs = percentile(samples, count, 50);
+    stats->p90Ns = percentile(samples, count, 90);
+    stats->p99Ns = percentile(samples, count, 99);
+    stats->maxNs = (double)samples[count - 1];
+
+    for (size_t i = 0; i < count; i++) {
+        sum += (double)samples[i];
+    }
+    stats->meanNs = sum / (double)count;
+
+    if (count > 1) {
+        double variance = 0.0;
+
+        for (size_t i = 0; i < count; i++) {
+            double diff = (double)samples[i] - stats->meanNs;
+            variance += diff * diff;
+        }
+        stats->stddevNs = sqrt(variance / (double)(count - 1));
+    } else {
+        stats->stddevNs = 0.0;
+    }
+
+    stats->samples = (int)count;
+}
+
+int lkRunTestCase(const struct LkTestCase *testCase,
+                  const struct LkOptions *options, struct LkStats *stats) {
+    uint64_t *samples = NULL;
     int result = 0;
+
+    if (options->sampleCount == 0 ||
+        options->sampleCount > LK_MAX_SAMPLE_COUNT) {
+        fprintf(stderr, "lkbench: %s: invalid sample count\n", testCase->id);
+        return -1;
+    }
 
     if (testCase->start != NULL && testCase->start() != 0) {
         fprintf(stderr, "lkbench: %s: start failed\n", testCase->id);
         return -1;
     }
 
-    if (calibrate(testCase, &iterations) != 0 ||
-        warmup(testCase, iterations) != 0 ||
-        sampleLatency(testCase, iterations, stats) != 0) {
+    samples = malloc(options->sampleCount * sizeof(*samples));
+    if (samples == NULL) {
+        fprintf(stderr, "lkbench: %s: out of memory\n", testCase->id);
         result = -1;
+        goto done;
     }
 
+    if (warmup(testCase, options->warmupNs) != 0 ||
+        collectSamples(testCase, samples, options->sampleCount) != 0) {
+        result = -1;
+        goto done;
+    }
+
+    computeStats(samples, options->sampleCount, stats);
+
+done:
     if (testCase->terminate != NULL) {
         testCase->terminate();
     }
-
+    free(samples);
     return result;
 }

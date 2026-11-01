@@ -21,7 +21,7 @@ add_executable(lkbench
     ${LK_TEST_SOURCES})
 
 target_include_directories(lkbench PRIVATE src)
-target_link_libraries(lkbench PRIVATE yyjson)
+target_link_libraries(lkbench PRIVATE yyjson m)
 target_compile_definitions(lkbench PRIVATE
     _POSIX_C_SOURCE=200809L
     LKBENCH_VERSION="${PROJECT_VERSION}")
