@@ -2,19 +2,15 @@
 
 #include "lkbench.h"
 
-#include <fcntl.h>
 #include <unistd.h>
 
+static char buffer[256];
 static volatile long sink;
 
 static int start(void) { return 0; }
 
 static void test(void) {
-    int fd = open("/dev/null", O_RDONLY);
-
-    if (fd >= 0) {
-        sink = (long)close(fd);
-    }
+    sink = (long)(getcwd(buffer, sizeof(buffer)) != NULL);
 }
 
 static void terminate(void) {}

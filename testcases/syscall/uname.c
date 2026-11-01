@@ -2,16 +2,16 @@
 
 #include "lkbench.h"
 
-#include <sys/stat.h>
+#include <sys/utsname.h>
 
 static volatile long sink;
 
 static int start(void) { return 0; }
 
 static void test(void) {
-    struct stat info;
+    struct utsname info;
 
-    sink = (long)stat(".", &info);
+    sink = (long)uname(&info);
 }
 
 static void terminate(void) {}
