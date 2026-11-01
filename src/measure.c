@@ -98,6 +98,9 @@ int lkRunTestCase(const struct LkTestCase *testCase,
 
     if (testCase->start != NULL && testCase->start() != 0) {
         fprintf(stderr, "lkbench: %s: start failed\n", testCase->id);
+        if (testCase->terminate != NULL) {
+            testCase->terminate();
+        }
         return -1;
     }
 
