@@ -10,6 +10,10 @@ set(CMAKE_C_EXTENSIONS OFF)
 file(GLOB_RECURSE LK_TEST_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/testcases/*.c")
 
+add_library(yyjson STATIC third/yyjson/yyjson.c)
+target_include_directories(yyjson SYSTEM PUBLIC third/yyjson)
+target_compile_options(yyjson PRIVATE -w)
+
 add_executable(lkbench
     src/main.c
     src/measure.c
@@ -17,6 +21,7 @@ add_executable(lkbench
     ${LK_TEST_SOURCES})
 
 target_include_directories(lkbench PRIVATE src)
+target_link_libraries(lkbench PRIVATE yyjson)
 target_compile_definitions(lkbench PRIVATE
     _POSIX_C_SOURCE=200809L
     LKBENCH_VERSION="${PROJECT_VERSION}")
