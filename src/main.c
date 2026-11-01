@@ -11,10 +11,20 @@
 #include <yyjson.h>
 
 #define MAX_SELECTORS 64
+#define MAX_TEXT_COLUMNS 32
+#define MAX_TEXT_GROUPS 16
+#define TEXT_COLUMN_WIDTH 12
+#define TEXT_SAMPLES_WIDTH 10
 
 enum LkFormat {
     LkFormatText,
     LkFormatJson,
+};
+
+struct TextColumn {
+    const char *name;
+    size_t width;
+    char label[64];
 };
 
 static void printUsage(FILE *stream, const char *program) {
@@ -245,22 +255,131 @@ static int appendJsonResult(yyjson_mut_doc *doc, yyjson_mut_val *results,
     return 0;
 }
 
-static void printTextResult(const struct LkTestCase *testCase,
-                            const struct LkSamples *samples, const char *filter,
-                            size_t idWidth) {
-    printf("%-*s", (int)idWidth, testCase->id);
+struct TextGroup {
+    char name[64];
+    struct TextColumn columns[MAX_TEXT_COLUMNS];
+    size_t columnCount;
+};
 
-    for (size_t i = 0; i < testCase->metricCount; i++) {
-        const struct LkMetric *metric = &testCase->metrics[i];
+static void testGroupName(const char *id, char *buffer, size_t size) {
+    const char *dot = strchr(id, '.');
+    size_t length = dot != NULL ? (size_t)(dot - id) : strlen(id);
 
-        if (!metricSelected(metric->name, filter)) {
-            continue;
+    if (length >= size) {
+        length = size - 1;
+    }
+    memcpy(buffer, id, length);
+    buffer[length] = '\0';
+}
+
+static struct TextGroup *findTextGroup(struct TextGroup *groups, size_t count,
+                                       const char *name) {
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(groups[i].name, name) == 0) {
+            return &groups[i];
         }
-        printf("  %s %9.1f %s", metric->name, metric->compute(samples),
-               metric->unit);
+    }
+    return NULL;
+}
+
+static int addTextColumn(struct TextColumn *columns, size_t *columnCount,
+                         const struct LkMetric *metric, const char *filter) {
+    for (size_t i = 0; i < *columnCount; i++) {
+        if (strcmp(columns[i].name, metric->name) == 0) {
+            return 0;
+        }
+    }
+    if (!metricSelected(metric->name, filter)) {
+        return 0;
+    }
+    if (*columnCount >= MAX_TEXT_COLUMNS) {
+        return -1;
     }
 
-    printf("  (samples %zu)\n", samples->count);
+    struct TextColumn *column = &columns[*columnCount];
+
+    column->name = metric->name;
+    (void)snprintf(column->label, sizeof(column->label), "%s(%s)", metric->name,
+                   metric->unit);
+    column->width = strlen(column->label);
+    if (column->width < TEXT_COLUMN_WIDTH) {
+        column->width = TEXT_COLUMN_WIDTH;
+    }
+    (*columnCount)++;
+    return 0;
+}
+
+static int buildTextGroups(const unsigned char *selected, size_t testCount,
+                           const char *filter, struct TextGroup *groups,
+                           size_t *groupCount) {
+    *groupCount = 0;
+
+    for (size_t i = 0; i < testCount; i++) {
+        const struct LkTestCase *testCase = lkTestCaseAt(i);
+        char groupName[64];
+        struct TextGroup *group;
+
+        if (selected != NULL && selected[i] == 0) {
+            continue;
+        }
+
+        testGroupName(testCase->id, groupName, sizeof(groupName));
+        group = findTextGroup(groups, *groupCount, groupName);
+        if (group == NULL) {
+            if (*groupCount >= MAX_TEXT_GROUPS) {
+                return -1;
+            }
+            group = &groups[*groupCount];
+            (void)snprintf(group->name, sizeof(group->name), "%s", groupName);
+            group->columnCount = 0;
+            (*groupCount)++;
+        }
+
+        for (size_t j = 0; j < testCase->metricCount; j++) {
+            if (addTextColumn(group->columns, &group->columnCount,
+                              &testCase->metrics[j], filter) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static const struct LkMetric *findMetric(const struct LkTestCase *testCase,
+                                         const char *name) {
+    for (size_t i = 0; i < testCase->metricCount; i++) {
+        if (strcmp(testCase->metrics[i].name, name) == 0) {
+            return &testCase->metrics[i];
+        }
+    }
+    return NULL;
+}
+
+static void printTextHeader(size_t idWidth, const struct TextColumn *columns,
+                            size_t columnCount) {
+    printf("%-*s", (int)idWidth, "test");
+    for (size_t i = 0; i < columnCount; i++) {
+        printf("  %*s", (int)columns[i].width, columns[i].label);
+    }
+    printf("  %*s\n", TEXT_SAMPLES_WIDTH, "samples");
+}
+
+static void printTextRow(const struct LkTestCase *testCase,
+                         const struct LkSamples *samples, size_t idWidth,
+                         const struct TextColumn *columns, size_t columnCount) {
+    printf("%-*s", (int)idWidth, testCase->id);
+
+    for (size_t i = 0; i < columnCount; i++) {
+        const struct LkMetric *metric = findMetric(testCase, columns[i].name);
+
+        if (metric != NULL) {
+            printf("  %*.1f", (int)columns[i].width, metric->compute(samples));
+        } else {
+            printf("  %*s", (int)columns[i].width, "N/A");
+        }
+    }
+
+    printf("  %*zu\n", TEXT_SAMPLES_WIDTH, samples->count);
 }
 
 static size_t maxIdWidth(void) {
@@ -300,6 +419,11 @@ int main(int argc, char **argv) {
     int option;
     size_t count;
     size_t idWidth;
+    struct TextGroup textGroups[MAX_TEXT_GROUPS];
+    size_t textGroupCount = 0;
+    char currentTextGroup[64] = {0};
+    int firstTextTable = 1;
+    struct TextGroup *textGroup = NULL;
     unsigned char *selected = NULL;
     enum LkFormat format = LkFormatText;
     struct LkOptions runOptions = {
@@ -446,12 +570,40 @@ int main(int argc, char **argv) {
     }
 
     idWidth = maxIdWidth();
+    if (format == LkFormatText &&
+        buildTextGroups(selected, count, metricFilter, textGroups,
+                        &textGroupCount) != 0) {
+        fprintf(stderr, "%s: too many metric columns\n", program);
+        free(selected);
+        return 1;
+    }
+
     for (size_t i = 0; i < count; i++) {
         struct LkTestCase *testCase = lkTestCaseAt(i);
         struct LkSamples samples;
 
         if (selected != NULL && selected[i] == 0) {
             continue;
+        }
+        if (format == LkFormatText) {
+            char groupName[64];
+
+            testGroupName(testCase->id, groupName, sizeof(groupName));
+            if (strcmp(currentTextGroup, groupName) != 0) {
+                textGroup =
+                    findTextGroup(textGroups, textGroupCount, groupName);
+                if (textGroup != NULL && textGroup->columnCount > 0) {
+                    if (firstTextTable == 0) {
+                        printf("\n");
+                    }
+                    firstTextTable = 0;
+                    printf("%s:\n", textGroup->name);
+                    printTextHeader(idWidth, textGroup->columns,
+                                    textGroup->columnCount);
+                }
+                (void)snprintf(currentTextGroup, sizeof(currentTextGroup), "%s",
+                               groupName);
+            }
         }
         if (lkRunTestCase(testCase, &runOptions, &samples) != 0) {
             failures++;
@@ -467,8 +619,9 @@ int main(int argc, char **argv) {
                 yyjson_mut_doc_free(jsonDoc);
                 return 1;
             }
-        } else {
-            printTextResult(testCase, &samples, metricFilter, idWidth);
+        } else if (textGroup != NULL && textGroup->columnCount > 0) {
+            printTextRow(testCase, &samples, idWidth, textGroup->columns,
+                         textGroup->columnCount);
         }
         lkFreeSamples(&samples);
     }
