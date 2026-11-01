@@ -111,8 +111,14 @@ int lkRunTestCase(const struct LkTestCase *testCase,
         goto done;
     }
 
-    if (warmup(testCase, options->warmupNs) != 0 ||
-        collectSamples(testCase, values, options->sampleCount) != 0) {
+    if (warmup(testCase, options->warmupNs) != 0) {
+        result = -1;
+        goto done;
+    }
+    if (testCase->reset != NULL) {
+        testCase->reset();
+    }
+    if (collectSamples(testCase, values, options->sampleCount) != 0) {
         result = -1;
         goto done;
     }
