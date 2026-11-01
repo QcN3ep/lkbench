@@ -15,4 +15,5 @@ static void test(void) {
 
 static void terminate(void) {}
 
+LK_METRICS_LATENCY()
 LK_TEST()

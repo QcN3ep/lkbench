@@ -10,34 +10,23 @@
 #define LKBENCH_VERSION "dev"
 #endif
 
-struct LkStats {
-    double minNs;
-    double medianNs;
-    double p90Ns;
-    double p99Ns;
-    double maxNs;
-    double meanNs;
-    double stddevNs;
-    int samples;
+struct LkSamples {
+    uint64_t *values;
+    size_t count;
+    uint64_t elapsedNs;
+};
+
+struct LkMetric {
+    const char *name;
+    const char *unit;
+    double (*compute)(const struct LkSamples *samples);
 };
 
 struct LkOptions {
     uint64_t warmupNs;
     size_t sampleCount;
-    unsigned int statsMask;
 };
 
-#define LK_STAT_MIN 0x01U
-#define LK_STAT_MEDIAN 0x02U
-#define LK_STAT_P90 0x04U
-#define LK_STAT_P99 0x08U
-#define LK_STAT_MAX 0x10U
-#define LK_STAT_MEAN 0x20U
-#define LK_STAT_STDDEV 0x40U
-
-#define LK_STATS_ALL                                                           \
-    (LK_STAT_MIN | LK_STAT_MEDIAN | LK_STAT_P90 | LK_STAT_P99 | LK_STAT_MAX |  \
-     LK_STAT_MEAN | LK_STAT_STDDEV)
 #define LK_DEFAULT_WARMUP_NS 100000000ULL
 #define LK_DEFAULT_SAMPLE_COUNT 100000
 #define LK_MAX_SAMPLE_COUNT 10000000
@@ -48,14 +37,27 @@ struct LkTestCase {
     int (*start)(void);
     void (*test)(void);
     void (*terminate)(void);
+    const struct LkMetric *metrics;
+    size_t metricCount;
 };
 
 void lkRegisterTestCase(struct LkTestCase *testCase);
+void lkRegisterMetrics(const char *file, const struct LkMetric *metrics,
+                       size_t count);
 size_t lkTestCaseCount(void);
 struct LkTestCase *lkTestCaseAt(size_t index);
 int lkTestCaseMatches(const struct LkTestCase *testCase, const char *selector);
 int lkRunTestCase(const struct LkTestCase *testCase,
-                  const struct LkOptions *options, struct LkStats *stats);
+                  const struct LkOptions *options, struct LkSamples *samples);
+void lkFreeSamples(struct LkSamples *samples);
+
+double lkMetricLatencyMin(const struct LkSamples *samples);
+double lkMetricLatencyMedian(const struct LkSamples *samples);
+double lkMetricLatencyP90(const struct LkSamples *samples);
+double lkMetricLatencyP99(const struct LkSamples *samples);
+double lkMetricLatencyMax(const struct LkSamples *samples);
+double lkMetricLatencyMean(const struct LkSamples *samples);
+double lkMetricLatencyStddev(const struct LkSamples *samples);
 
 #ifdef __has_attribute
 #if __has_attribute(constructor)
@@ -71,6 +73,27 @@ int lkRunTestCase(const struct LkTestCase *testCase,
     "lkbench requires GCC/Clang constructor attribute for test auto-registration"
 #endif
 #endif
+
+#define LK_METRIC(metricName, metricUnit, metricCompute)                       \
+    {(metricName), (metricUnit), (metricCompute)}
+
+#define LK_METRICS_LATENCY_LIST                                                \
+    LK_METRIC("min", "ns", lkMetricLatencyMin),                                \
+        LK_METRIC("median", "ns", lkMetricLatencyMedian),                      \
+        LK_METRIC("p90", "ns", lkMetricLatencyP90),                            \
+        LK_METRIC("p99", "ns", lkMetricLatencyP99),                            \
+        LK_METRIC("max", "ns", lkMetricLatencyMax),                            \
+        LK_METRIC("mean", "ns", lkMetricLatencyMean),                          \
+        LK_METRIC("stddev", "ns", lkMetricLatencyStddev)
+
+#define LK_METRICS(...)                                                        \
+    static const struct LkMetric lkMetrics[] = {__VA_ARGS__};                  \
+    static void LK_CONSTRUCTOR lkMetricsAutoRegister(void) {                   \
+        lkRegisterMetrics(__FILE__, lkMetrics,                                 \
+                          sizeof(lkMetrics) / sizeof(lkMetrics[0]));           \
+    }
+
+#define LK_METRICS_LATENCY() LK_METRICS(LK_METRICS_LATENCY_LIST)
 
 #define LK_TEST()                                                              \
     static struct LkTestCase lkTestCase = {                                    \

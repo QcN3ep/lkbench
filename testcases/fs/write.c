@@ -36,4 +36,5 @@ static void terminate(void) {
     unlink(path);
 }
 
+LK_METRICS_LATENCY()
 LK_TEST()

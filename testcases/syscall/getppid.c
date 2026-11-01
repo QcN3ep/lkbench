@@ -12,4 +12,5 @@ static void test(void) { sink = (long)getppid(); }
 
 static void terminate(void) {}
 
+LK_METRICS_LATENCY()
 LK_TEST()

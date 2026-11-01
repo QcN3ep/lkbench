@@ -3,7 +3,6 @@
 #include "lkbench.h"
 
 #include <errno.h>
-#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +47,7 @@ static int warmup(const struct LkTestCase *testCase, uint64_t durationNs) {
     return 0;
 }
 
-static int collectSamples(const struct LkTestCase *testCase, uint64_t *samples,
+static int collectSamples(const struct LkTestCase *testCase, uint64_t *values,
                           size_t count) {
     for (size_t i = 0; i < count; i++) {
         uint64_t begin;
@@ -61,7 +60,7 @@ static int collectSamples(const struct LkTestCase *testCase, uint64_t *samples,
         if (nowNs(&end) != 0) {
             return -1;
         }
-        samples[i] = end - begin;
+        values[i] = end - begin;
     }
 
     return 0;
@@ -74,55 +73,22 @@ static int compareSamples(const void *leftValue, const void *rightValue) {
     return (left > right) - (left < right);
 }
 
-static double percentile(const uint64_t *sorted, size_t count,
-                         unsigned int percent) {
-    size_t rank = ((count * percent) + 99) / 100;
-
-    if (rank == 0) {
-        rank = 1;
-    }
-    if (rank > count) {
-        rank = count;
-    }
-    return (double)sorted[rank - 1];
-}
-
-static void computeStats(uint64_t *samples, size_t count,
-                         struct LkStats *stats) {
-    double sum = 0.0;
-
-    qsort(samples, count, sizeof(*samples), compareSamples);
-
-    stats->minNs = (double)samples[0];
-    stats->medianNs = percentile(samples, count, 50);
-    stats->p90Ns = percentile(samples, count, 90);
-    stats->p99Ns = percentile(samples, count, 99);
-    stats->maxNs = (double)samples[count - 1];
-
-    for (size_t i = 0; i < count; i++) {
-        sum += (double)samples[i];
-    }
-    stats->meanNs = sum / (double)count;
-
-    if (count > 1) {
-        double variance = 0.0;
-
-        for (size_t i = 0; i < count; i++) {
-            double diff = (double)samples[i] - stats->meanNs;
-            variance += diff * diff;
-        }
-        stats->stddevNs = sqrt(variance / (double)(count - 1));
-    } else {
-        stats->stddevNs = 0.0;
-    }
-
-    stats->samples = (int)count;
+void lkFreeSamples(struct LkSamples *samples) {
+    free(samples->values);
+    samples->values = NULL;
+    samples->count = 0;
+    samples->elapsedNs = 0;
 }
 
 int lkRunTestCase(const struct LkTestCase *testCase,
-                  const struct LkOptions *options, struct LkStats *stats) {
-    uint64_t *samples = NULL;
+                  const struct LkOptions *options, struct LkSamples *samples) {
+    uint64_t *values = NULL;
+    uint64_t totalNs = 0;
     int result = 0;
+
+    samples->values = NULL;
+    samples->count = 0;
+    samples->elapsedNs = 0;
 
     if (options->sampleCount == 0 ||
         options->sampleCount > LK_MAX_SAMPLE_COUNT) {
@@ -135,25 +101,34 @@ int lkRunTestCase(const struct LkTestCase *testCase,
         return -1;
     }
 
-    samples = malloc(options->sampleCount * sizeof(*samples));
-    if (samples == NULL) {
+    values = malloc(options->sampleCount * sizeof(*values));
+    if (values == NULL) {
         fprintf(stderr, "lkbench: %s: out of memory\n", testCase->id);
         result = -1;
         goto done;
     }
 
     if (warmup(testCase, options->warmupNs) != 0 ||
-        collectSamples(testCase, samples, options->sampleCount) != 0) {
+        collectSamples(testCase, values, options->sampleCount) != 0) {
         result = -1;
         goto done;
     }
 
-    computeStats(samples, options->sampleCount, stats);
+    qsort(values, options->sampleCount, sizeof(*values), compareSamples);
+    for (size_t i = 0; i < options->sampleCount; i++) {
+        totalNs += values[i];
+    }
+
+    samples->values = values;
+    samples->count = options->sampleCount;
+    samples->elapsedNs = totalNs;
 
 done:
     if (testCase->terminate != NULL) {
         testCase->terminate();
     }
-    free(samples);
+    if (result != 0) {
+        free(values);
+    }
     return result;
 }

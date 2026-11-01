@@ -8,8 +8,16 @@
 
 #define MAX_TEST_CASES 256
 
+struct LkPendingMetrics {
+    const char *file;
+    const struct LkMetric *metrics;
+    size_t count;
+};
+
 static struct LkTestCase *testCases[MAX_TEST_CASES];
 static size_t testCaseCount;
+static struct LkPendingMetrics pendingMetrics[MAX_TEST_CASES];
+static size_t pendingMetricCount;
 static int registrySorted;
 
 static const char *baseName(const char *path) {
@@ -94,6 +102,37 @@ void lkRegisterTestCase(struct LkTestCase *testCase) {
     testCases[testCaseCount] = testCase;
     testCaseCount++;
     registrySorted = 0;
+
+    for (size_t i = 0; i < pendingMetricCount; i++) {
+        if (pendingMetrics[i].file != NULL &&
+            strcmp(pendingMetrics[i].file, testCase->file) == 0) {
+            testCase->metrics = pendingMetrics[i].metrics;
+            testCase->metricCount = pendingMetrics[i].count;
+            pendingMetrics[i].file = NULL;
+            break;
+        }
+    }
+}
+
+void lkRegisterMetrics(const char *file, const struct LkMetric *metrics,
+                       size_t count) {
+    for (size_t i = 0; i < testCaseCount; i++) {
+        if (strcmp(testCases[i]->file, file) == 0) {
+            testCases[i]->metrics = metrics;
+            testCases[i]->metricCount = count;
+            return;
+        }
+    }
+
+    if (pendingMetricCount >= MAX_TEST_CASES) {
+        fprintf(stderr, "lkbench: too many metric registrations\n");
+        exit(1);
+    }
+
+    pendingMetrics[pendingMetricCount].file = file;
+    pendingMetrics[pendingMetricCount].metrics = metrics;
+    pendingMetrics[pendingMetricCount].count = count;
+    pendingMetricCount++;
 }
 
 size_t lkTestCaseCount(void) {

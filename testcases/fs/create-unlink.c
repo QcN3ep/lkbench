@@ -38,4 +38,5 @@ static void terminate(void) {
     rmdir(dir);
 }
 
+LK_METRICS_LATENCY()
 LK_TEST()

@@ -32,8 +32,8 @@ static void printUsage(FILE *stream, const char *program) {
     fprintf(stream, "  -w, --warmup <duration>  Warmup time (default 100ms)\n");
     fprintf(stream,
             "  -n, --samples <count>    Samples per test (default 100000)\n");
-    fprintf(stream, "  -s, --stats <list>       Stats: "
-                    "min,median,p90,p99,max,mean,stddev\n");
+    fprintf(stream,
+            "  -s, --stats <list>       Metrics to output (comma separated)\n");
 }
 
 static void printVersion(void) { printf("lkbench %s\n", LKBENCH_VERSION); }
@@ -103,37 +103,8 @@ static int parseSampleCount(const char *value, size_t *count) {
     return 0;
 }
 
-static unsigned int statFlagFromName(const char *name, size_t length) {
-    if (length == 3 && strncmp(name, "min", length) == 0) {
-        return LK_STAT_MIN;
-    }
-    if (length == 6 && strncmp(name, "median", length) == 0) {
-        return LK_STAT_MEDIAN;
-    }
-    if (length == 3 && strncmp(name, "p50", length) == 0) {
-        return LK_STAT_MEDIAN;
-    }
-    if (length == 3 && strncmp(name, "p90", length) == 0) {
-        return LK_STAT_P90;
-    }
-    if (length == 3 && strncmp(name, "p99", length) == 0) {
-        return LK_STAT_P99;
-    }
-    if (length == 3 && strncmp(name, "max", length) == 0) {
-        return LK_STAT_MAX;
-    }
-    if (length == 4 && strncmp(name, "mean", length) == 0) {
-        return LK_STAT_MEAN;
-    }
-    if (length == 6 && strncmp(name, "stddev", length) == 0) {
-        return LK_STAT_STDDEV;
-    }
-    return 0;
-}
-
-static int parseStatsMask(const char *value, unsigned int *mask) {
+static int validateMetricFilter(const char *value) {
     const char *cursor = value;
-    unsigned int result = 0;
 
     if (*cursor == '\0') {
         return -1;
@@ -143,13 +114,10 @@ static int parseStatsMask(const char *value, unsigned int *mask) {
         const char *comma = strchr(cursor, ',');
         size_t length =
             comma != NULL ? (size_t)(comma - cursor) : strlen(cursor);
-        unsigned int flag = statFlagFromName(cursor, length);
 
-        if (flag == 0) {
+        if (length == 0) {
             return -1;
         }
-        result |= flag;
-
         if (comma == NULL) {
             break;
         }
@@ -159,56 +127,118 @@ static int parseStatsMask(const char *value, unsigned int *mask) {
         }
     }
 
-    *mask = result;
     return 0;
 }
 
-static int appendJsonStats(yyjson_mut_doc *doc, yyjson_mut_val *item,
-                           const struct LkStats *stats, unsigned int mask) {
-    if ((mask & LK_STAT_MIN) != 0 &&
-        !yyjson_mut_obj_add_real(doc, item, "minNs", stats->minNs)) {
-        return -1;
+static int metricNameMatches(const char *name, const char *token,
+                             size_t length) {
+    if (strlen(name) == length && strncmp(name, token, length) == 0) {
+        return 1;
     }
-    if ((mask & LK_STAT_MEDIAN) != 0 &&
-        !yyjson_mut_obj_add_real(doc, item, "medianNs", stats->medianNs)) {
-        return -1;
+    return length == 3 && strncmp(token, "p50", 3) == 0 &&
+           strcmp(name, "median") == 0;
+}
+
+static int metricSelected(const char *name, const char *filter) {
+    const char *cursor = filter;
+
+    if (filter == NULL) {
+        return 1;
     }
-    if ((mask & LK_STAT_P90) != 0 &&
-        !yyjson_mut_obj_add_real(doc, item, "p90Ns", stats->p90Ns)) {
-        return -1;
+
+    for (;;) {
+        const char *comma = strchr(cursor, ',');
+        size_t length =
+            comma != NULL ? (size_t)(comma - cursor) : strlen(cursor);
+
+        if (metricNameMatches(name, cursor, length)) {
+            return 1;
+        }
+        if (comma == NULL) {
+            break;
+        }
+        cursor = comma + 1;
     }
-    if ((mask & LK_STAT_P99) != 0 &&
-        !yyjson_mut_obj_add_real(doc, item, "p99Ns", stats->p99Ns)) {
-        return -1;
-    }
-    if ((mask & LK_STAT_MAX) != 0 &&
-        !yyjson_mut_obj_add_real(doc, item, "maxNs", stats->maxNs)) {
-        return -1;
-    }
-    if ((mask & LK_STAT_MEAN) != 0 &&
-        !yyjson_mut_obj_add_real(doc, item, "meanNs", stats->meanNs)) {
-        return -1;
-    }
-    if ((mask & LK_STAT_STDDEV) != 0 &&
-        !yyjson_mut_obj_add_real(doc, item, "stddevNs", stats->stddevNs)) {
-        return -1;
-    }
-    if (!yyjson_mut_obj_add_int(doc, item, "samples", stats->samples)) {
-        return -1;
-    }
+
     return 0;
+}
+
+static int metricFilterKnown(const char *filter, size_t testCount) {
+    const char *cursor = filter;
+
+    for (;;) {
+        const char *comma = strchr(cursor, ',');
+        size_t length =
+            comma != NULL ? (size_t)(comma - cursor) : strlen(cursor);
+        int found = 0;
+
+        for (size_t i = 0; i < testCount && found == 0; i++) {
+            struct LkTestCase *testCase = lkTestCaseAt(i);
+
+            for (size_t j = 0; j < testCase->metricCount; j++) {
+                if (metricNameMatches(testCase->metrics[j].name, cursor,
+                                      length)) {
+                    found = 1;
+                    break;
+                }
+            }
+        }
+
+        if (found == 0) {
+            return 0;
+        }
+        if (comma == NULL) {
+            break;
+        }
+        cursor = comma + 1;
+    }
+
+    return 1;
+}
+
+static int appendJsonMetrics(yyjson_mut_doc *doc, yyjson_mut_val *item,
+                             const struct LkTestCase *testCase,
+                             const struct LkSamples *samples,
+                             const char *filter) {
+    yyjson_mut_val *metrics = yyjson_mut_arr(doc);
+
+    if (metrics == NULL) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < testCase->metricCount; i++) {
+        const struct LkMetric *metric = &testCase->metrics[i];
+        yyjson_mut_val *entry;
+
+        if (!metricSelected(metric->name, filter)) {
+            continue;
+        }
+        entry = yyjson_mut_obj(doc);
+        if (entry == NULL ||
+            !yyjson_mut_obj_add_str(doc, entry, "name", metric->name) ||
+            !yyjson_mut_obj_add_str(doc, entry, "unit", metric->unit) ||
+            !yyjson_mut_obj_add_real(doc, entry, "value",
+                                     metric->compute(samples)) ||
+            !yyjson_mut_arr_append(metrics, entry)) {
+            return -1;
+        }
+    }
+
+    return yyjson_mut_obj_add_val(doc, item, "metrics", metrics) ? 0 : -1;
 }
 
 static int appendJsonResult(yyjson_mut_doc *doc, yyjson_mut_val *results,
                             const struct LkTestCase *testCase,
-                            const struct LkStats *stats, unsigned int mask) {
+                            const struct LkSamples *samples,
+                            const char *filter) {
     yyjson_mut_val *item = yyjson_mut_obj(doc);
 
     if (item == NULL) {
         return -1;
     }
     if (!yyjson_mut_obj_add_str(doc, item, "id", testCase->id) ||
-        appendJsonStats(doc, item, stats, mask) != 0 ||
+        !yyjson_mut_obj_add_int(doc, item, "samples", (int)samples->count) ||
+        appendJsonMetrics(doc, item, testCase, samples, filter) != 0 ||
         !yyjson_mut_arr_append(results, item)) {
         return -1;
     }
@@ -216,31 +246,21 @@ static int appendJsonResult(yyjson_mut_doc *doc, yyjson_mut_val *results,
 }
 
 static void printTextResult(const struct LkTestCase *testCase,
-                            const struct LkStats *stats, unsigned int mask,
+                            const struct LkSamples *samples, const char *filter,
                             size_t idWidth) {
     printf("%-*s", (int)idWidth, testCase->id);
-    if ((mask & LK_STAT_MIN) != 0) {
-        printf("  min %9.1f ns", stats->minNs);
+
+    for (size_t i = 0; i < testCase->metricCount; i++) {
+        const struct LkMetric *metric = &testCase->metrics[i];
+
+        if (!metricSelected(metric->name, filter)) {
+            continue;
+        }
+        printf("  %s %9.1f %s", metric->name, metric->compute(samples),
+               metric->unit);
     }
-    if ((mask & LK_STAT_MEDIAN) != 0) {
-        printf("  median %9.1f ns", stats->medianNs);
-    }
-    if ((mask & LK_STAT_P90) != 0) {
-        printf("  p90 %9.1f ns", stats->p90Ns);
-    }
-    if ((mask & LK_STAT_P99) != 0) {
-        printf("  p99 %9.1f ns", stats->p99Ns);
-    }
-    if ((mask & LK_STAT_MAX) != 0) {
-        printf("  max %9.1f ns", stats->maxNs);
-    }
-    if ((mask & LK_STAT_MEAN) != 0) {
-        printf("  mean %9.1f ns", stats->meanNs);
-    }
-    if ((mask & LK_STAT_STDDEV) != 0) {
-        printf("  stddev %9.1f ns", stats->stddevNs);
-    }
-    printf("  (samples %d)\n", stats->samples);
+
+    printf("  (samples %zu)\n", samples->count);
 }
 
 static size_t maxIdWidth(void) {
@@ -274,6 +294,7 @@ int main(int argc, char **argv) {
     const char *program = argc > 0 ? argv[0] : "lkbench";
     const char *selectors[MAX_SELECTORS];
     const char *formatValue = NULL;
+    const char *metricFilter = NULL;
     size_t selectorCount = 0;
     int listOnly = 0;
     int option;
@@ -284,7 +305,6 @@ int main(int argc, char **argv) {
     struct LkOptions runOptions = {
         LK_DEFAULT_WARMUP_NS,
         LK_DEFAULT_SAMPLE_COUNT,
-        LK_STATS_ALL,
     };
     yyjson_mut_doc *jsonDoc = NULL;
     yyjson_mut_val *jsonResults = NULL;
@@ -330,12 +350,13 @@ int main(int argc, char **argv) {
             }
             break;
         case 's':
-            if (parseStatsMask(optarg, &runOptions.statsMask) != 0) {
+            if (validateMetricFilter(optarg) != 0) {
                 fprintf(stderr, "%s: invalid stats list '%s'\n", program,
                         optarg);
                 printUsage(stderr, program);
                 return 2;
             }
+            metricFilter = optarg;
             break;
         case ':':
             fprintf(stderr, "%s: option '-%c' requires an argument\n", program,
@@ -369,6 +390,12 @@ int main(int argc, char **argv) {
     }
 
     count = lkTestCaseCount();
+    if (metricFilter != NULL && metricFilterKnown(metricFilter, count) == 0) {
+        fprintf(stderr, "%s: invalid stats list '%s'\n", program, metricFilter);
+        printUsage(stderr, program);
+        return 2;
+    }
+
     if (listOnly != 0) {
         for (size_t i = 0; i < count; i++) {
             printf("%s\n", lkTestCaseAt(i)->id);
@@ -421,27 +448,29 @@ int main(int argc, char **argv) {
     idWidth = maxIdWidth();
     for (size_t i = 0; i < count; i++) {
         struct LkTestCase *testCase = lkTestCaseAt(i);
-        struct LkStats stats;
+        struct LkSamples samples;
 
         if (selected != NULL && selected[i] == 0) {
             continue;
         }
-        if (lkRunTestCase(testCase, &runOptions, &stats) != 0) {
+        if (lkRunTestCase(testCase, &runOptions, &samples) != 0) {
             failures++;
             continue;
         }
 
         if (format == LkFormatJson) {
-            if (appendJsonResult(jsonDoc, jsonResults, testCase, &stats,
-                                 runOptions.statsMask) != 0) {
+            if (appendJsonResult(jsonDoc, jsonResults, testCase, &samples,
+                                 metricFilter) != 0) {
                 fprintf(stderr, "%s: failed to build JSON output\n", program);
+                lkFreeSamples(&samples);
                 free(selected);
                 yyjson_mut_doc_free(jsonDoc);
                 return 1;
             }
         } else {
-            printTextResult(testCase, &stats, runOptions.statsMask, idWidth);
+            printTextResult(testCase, &samples, metricFilter, idWidth);
         }
+        lkFreeSamples(&samples);
     }
 
     if (format == LkFormatJson) {

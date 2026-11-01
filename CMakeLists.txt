@@ -17,6 +17,7 @@ target_compile_options(yyjson PRIVATE -w)
 add_executable(lkbench
     src/main.c
     src/measure.c
+    src/metrics.c
     src/registry.c
     ${LK_TEST_SOURCES})
 
