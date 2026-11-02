@@ -14,6 +14,10 @@ add_library(yyjson STATIC third/yyjson/yyjson.c)
 target_include_directories(yyjson SYSTEM PUBLIC third/yyjson)
 target_compile_options(yyjson PRIVATE -w)
 
+add_library(xml STATIC third/xml.h/xml_impl.c)
+target_include_directories(xml SYSTEM PUBLIC third/xml.h)
+target_compile_options(xml PRIVATE -w)
+
 add_executable(lkbench
     src/main.c
     src/measure.c
@@ -22,7 +26,7 @@ add_executable(lkbench
     ${LK_TEST_SOURCES})
 
 target_include_directories(lkbench PRIVATE src)
-target_link_libraries(lkbench PRIVATE yyjson m)
+target_link_libraries(lkbench PRIVATE yyjson m xml)
 target_compile_definitions(lkbench PRIVATE
     _POSIX_C_SOURCE=200809L
     LKBENCH_VERSION="${PROJECT_VERSION}")

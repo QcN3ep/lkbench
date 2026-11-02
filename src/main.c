@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <xml.h>
 #include <yyjson.h>
 
 #define MAX_SELECTORS 64
@@ -19,6 +20,7 @@
 enum LkFormat {
     LkFormatText,
     LkFormatJson,
+    LkFormatXml,
 };
 
 struct TextColumn {
@@ -37,8 +39,9 @@ static void printUsage(FILE *stream, const char *program) {
     fprintf(
         stream,
         "  -b, --bench <selector> Run tests matching selector (repeatable)\n");
-    fprintf(stream,
-            "  -f, --format <format>  Output format: text (default), json\n");
+    fprintf(
+        stream,
+        "  -f, --format <format>  Output format: text (default), json, xml\n");
     fprintf(stream, "  -w, --warmup <duration>  Warmup time (default 100ms)\n");
     fprintf(stream,
             "  -n, --samples <count>    Samples per test (default 100000)\n");
@@ -55,6 +58,10 @@ static int parseFormat(const char *value, enum LkFormat *format) {
     }
     if (strcmp(value, "json") == 0) {
         *format = LkFormatJson;
+        return 0;
+    }
+    if (strcmp(value, "xml") == 0) {
+        *format = LkFormatXml;
         return 0;
     }
     return -1;
@@ -382,6 +389,82 @@ static void printTextRow(const struct LkTestCase *testCase,
     printf("  %*zu\n", TEXT_SAMPLES_WIDTH, samples->count);
 }
 
+static char *xmlEscapeAttr(const char *value) {
+    XMLString *escaped = xml_string_new();
+
+    if (escaped == NULL) {
+        return NULL;
+    }
+    for (const char *cursor = value; *cursor != '\0'; cursor++) {
+        switch (*cursor) {
+        case '&':
+            xml_string_append(escaped, "&amp;");
+            break;
+        case '<':
+            xml_string_append(escaped, "&lt;");
+            break;
+        case '>':
+            xml_string_append(escaped, "&gt;");
+            break;
+        case '"':
+            xml_string_append(escaped, "&quot;");
+            break;
+        case '\'':
+            xml_string_append(escaped, "&apos;");
+            break;
+        default: {
+            char character[2] = {*cursor, '\0'};
+            xml_string_append(escaped, character);
+            break;
+        }
+        }
+    }
+    return xml_string_steal(escaped);
+}
+
+static void addXmlAttr(XMLNode *node, const char *key, const char *value) {
+    char *escaped = xmlEscapeAttr(value);
+
+    if (escaped != NULL) {
+        xml_node_add_attr(node, key, escaped);
+        free(escaped);
+    }
+}
+
+static int appendXmlResult(XMLNode *root, const struct LkTestCase *testCase,
+                           const struct LkSamples *samples,
+                           const char *filter) {
+    XMLNode *testNode = xml_node_new(root, "test", NULL);
+    char buffer[64];
+
+    if (testNode == NULL) {
+        return -1;
+    }
+    addXmlAttr(testNode, "id", testCase->id);
+    (void)snprintf(buffer, sizeof(buffer), "%zu", samples->count);
+    addXmlAttr(testNode, "samples", buffer);
+
+    for (size_t i = 0; i < testCase->metricCount; i++) {
+        const struct LkMetric *metric = &testCase->metrics[i];
+        XMLNode *metricNode;
+
+        if (!metricSelected(metric->name, filter)) {
+            continue;
+        }
+        metricNode = xml_node_new(testNode, "metric", NULL);
+        if (metricNode == NULL) {
+            return -1;
+        }
+        addXmlAttr(metricNode, "name", metric->name);
+        addXmlAttr(metricNode, "unit", metric->unit);
+        (void)snprintf(buffer, sizeof(buffer), "%.17g",
+                       metric->compute(samples));
+        addXmlAttr(metricNode, "value", buffer);
+    }
+
+    return 0;
+}
+
 static size_t maxIdWidth(void) {
     size_t count = lkTestCaseCount();
     size_t width = 0;
@@ -432,6 +515,7 @@ int main(int argc, char **argv) {
     };
     yyjson_mut_doc *jsonDoc = NULL;
     yyjson_mut_val *jsonResults = NULL;
+    XMLNode *xmlRoot = NULL;
     int failures = 0;
 
     opterr = 0;
@@ -569,6 +653,15 @@ int main(int argc, char **argv) {
         yyjson_mut_doc_set_root(jsonDoc, jsonResults);
     }
 
+    if (format == LkFormatXml) {
+        xmlRoot = xml_node_new(NULL, "lkbench", NULL);
+        if (xmlRoot == NULL) {
+            fprintf(stderr, "%s: out of memory\n", program);
+            free(selected);
+            return 1;
+        }
+    }
+
     idWidth = maxIdWidth();
     if (format == LkFormatText &&
         buildTextGroups(selected, count, metricFilter, textGroups,
@@ -619,11 +712,35 @@ int main(int argc, char **argv) {
                 yyjson_mut_doc_free(jsonDoc);
                 return 1;
             }
+        } else if (format == LkFormatXml) {
+            if (appendXmlResult(xmlRoot, testCase, &samples, metricFilter) !=
+                0) {
+                fprintf(stderr, "%s: failed to build XML output\n", program);
+                lkFreeSamples(&samples);
+                free(selected);
+                xml_node_free(xmlRoot);
+                return 1;
+            }
         } else if (textGroup != NULL && textGroup->columnCount > 0) {
             printTextRow(testCase, &samples, idWidth, textGroup->columns,
                          textGroup->columnCount);
         }
         lkFreeSamples(&samples);
+    }
+
+    if (format == LkFormatXml) {
+        XMLString *xml = xml_string_new();
+
+        if (xml == NULL) {
+            fprintf(stderr, "%s: out of memory\n", program);
+            xml_node_free(xmlRoot);
+            free(selected);
+            return 1;
+        }
+        xml_node_serialize(xmlRoot, xml);
+        printf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n%s\n", xml->str);
+        xml_string_free(xml);
+        xml_node_free(xmlRoot);
     }
 
     if (format == LkFormatJson) {
