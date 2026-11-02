@@ -47,9 +47,23 @@ static int warmup(const struct LkTestCase *testCase, uint64_t durationNs) {
     return 0;
 }
 
+#define LK_PROGRESS_INTERVAL_NS 100000000ULL
+
 static int collectSamples(const struct LkTestCase *testCase, uint64_t *values,
-                          size_t count) {
-    for (size_t i = 0; i < count; i++) {
+                          const struct LkOptions *options) {
+    uint64_t nextProgress = 0;
+
+    if (options->progress != NULL) {
+        uint64_t start;
+
+        if (nowNs(&start) == 0) {
+            nextProgress = start + LK_PROGRESS_INTERVAL_NS;
+        }
+        options->progress(options->progressContext, testCase->id, 0,
+                          options->sampleCount);
+    }
+
+    for (size_t i = 0; i < options->sampleCount; i++) {
         uint64_t begin;
         uint64_t end;
 
@@ -61,8 +75,18 @@ static int collectSamples(const struct LkTestCase *testCase, uint64_t *values,
             return -1;
         }
         values[i] = end - begin;
+
+        if (options->progress != NULL && end >= nextProgress) {
+            options->progress(options->progressContext, testCase->id, i + 1,
+                              options->sampleCount);
+            nextProgress = end + LK_PROGRESS_INTERVAL_NS;
+        }
     }
 
+    if (options->progress != NULL) {
+        options->progress(options->progressContext, testCase->id,
+                          options->sampleCount, options->sampleCount);
+    }
     return 0;
 }
 
@@ -118,7 +142,7 @@ int lkRunTestCase(const struct LkTestCase *testCase,
     if (testCase->reset != NULL) {
         testCase->reset();
     }
-    if (collectSamples(testCase, values, options->sampleCount) != 0) {
+    if (collectSamples(testCase, values, options) != 0) {
         result = -1;
         goto done;
     }

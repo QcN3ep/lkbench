@@ -22,9 +22,14 @@ struct LkMetric {
     double (*compute)(const struct LkSamples *samples);
 };
 
+typedef void (*LkProgressFn)(void *context, const char *testId,
+                             size_t completed, size_t total);
+
 struct LkOptions {
     uint64_t warmupNs;
     size_t sampleCount;
+    LkProgressFn progress;
+    void *progressContext;
 };
 
 #define LK_DEFAULT_WARMUP_NS 100000000ULL

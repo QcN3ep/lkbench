@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 #include <xml.h>
 #include <yyjson.h>
 
@@ -44,12 +46,13 @@ static void printUsage(FILE *stream, const char *program) {
         stream,
         "  -b, --bench <selector> Run tests matching selector (repeatable)\n");
     fprintf(stream, "  -f, --format <format>  Output format: text (default), "
-                    "json, xml, yaml\n");
+                    "json, xml, yaml, cbor\n");
     fprintf(stream, "  -w, --warmup <duration>  Warmup time (default 100ms)\n");
     fprintf(stream,
             "  -n, --samples <count>    Samples per test (default 100000)\n");
     fprintf(stream,
             "  -s, --stats <list>       Metrics to output (comma separated)\n");
+    fprintf(stream, "  -q, --no-progress       Disable progress bar\n");
 }
 
 static void printVersion(void) { printf("lkbench %s\n", LKBENCH_VERSION); }
@@ -562,6 +565,61 @@ static int appendCborResult(mcbor_encoder_t *encoder,
     return mcbor_encoder_error(encoder) == MCBOR_OK ? 0 : -1;
 }
 
+struct ProgressState {
+    size_t current;
+    size_t total;
+};
+
+static size_t progressWidth(void) {
+    struct winsize window;
+
+    if (ioctl(STDERR_FILENO, TIOCGWINSZ, &window) == 0 && window.ws_col > 0) {
+        return window.ws_col;
+    }
+    return 80;
+}
+
+static void clearProgressLine(void) {
+    size_t width = progressWidth();
+
+    fprintf(stderr, "\r%*s\r", (int)width, "");
+}
+
+static void showProgress(void *context, const char *testId, size_t completed,
+                         size_t total) {
+    struct ProgressState *state = context;
+    double testFraction = total > 0 ? (double)completed / (double)total : 0.0;
+    double overall =
+        state->total > 0
+            ? ((double)state->current + testFraction) / (double)state->total
+            : 0.0;
+    char meta[128];
+    int metaLength =
+        snprintf(meta, sizeof(meta), " %3.0f%%  [%zu/%zu]  ", overall * 100.0,
+                 state->current + 1, state->total);
+    size_t columns = progressWidth();
+    size_t idLength = strlen(testId);
+    size_t fixed = 2 + (size_t)metaLength;
+    size_t available = columns > fixed ? columns - fixed : 0;
+    size_t barWidth;
+
+    if (idLength > available) {
+        idLength = available > 10 ? available - 10 : 0;
+    }
+    barWidth = available > idLength ? available - idLength : 0;
+    if (barWidth == 0) {
+        barWidth = 1;
+        idLength = 0;
+    }
+
+    fprintf(stderr, "\r[");
+    for (size_t i = 0; i < barWidth; i++) {
+        fputc((double)i / (double)barWidth < overall ? '#' : '-', stderr);
+    }
+    fprintf(stderr, "]%s%.*s", meta, (int)idLength, testId);
+    fflush(stderr);
+}
+
 static size_t maxIdWidth(void) {
     size_t count = lkTestCaseCount();
     size_t width = 0;
@@ -588,6 +646,7 @@ int main(int argc, char **argv) {
         {"warmup", required_argument, NULL, 'w'},
         {"samples", required_argument, NULL, 'n'},
         {"stats", required_argument, NULL, 's'},
+        {"no-progress", no_argument, NULL, 'q'},
         {NULL, 0, NULL, 0},
     };
     const char *program = argc > 0 ? argv[0] : "lkbench";
@@ -596,6 +655,7 @@ int main(int argc, char **argv) {
     const char *metricFilter = NULL;
     size_t selectorCount = 0;
     int listOnly = 0;
+    int noProgress = 0;
     int option;
     size_t count;
     size_t idWidth;
@@ -604,11 +664,14 @@ int main(int argc, char **argv) {
     char currentTextGroup[64] = {0};
     int firstTextTable = 1;
     struct TextGroup *textGroup = NULL;
+    struct ProgressState progressState = {0, 0};
     unsigned char *selected = NULL;
     enum LkFormat format = LkFormatText;
     struct LkOptions runOptions = {
         LK_DEFAULT_WARMUP_NS,
         LK_DEFAULT_SAMPLE_COUNT,
+        NULL,
+        NULL,
     };
     yyjson_mut_doc *jsonDoc = NULL;
     yyjson_mut_val *jsonResults = NULL;
@@ -619,7 +682,7 @@ int main(int argc, char **argv) {
     int failures = 0;
 
     opterr = 0;
-    while ((option = getopt_long(argc, argv, ":hlvb:f:w:n:s:", options,
+    while ((option = getopt_long(argc, argv, ":hlvb:f:w:n:s:q", options,
                                  NULL)) != -1) {
         switch (option) {
         case 'h':
@@ -665,6 +728,9 @@ int main(int argc, char **argv) {
                 return 2;
             }
             metricFilter = optarg;
+            break;
+        case 'q':
+            noProgress = 1;
             break;
         case ':':
             fprintf(stderr, "%s: option '-%c' requires an argument\n", program,
@@ -733,6 +799,23 @@ int main(int argc, char **argv) {
                 free(selected);
                 return 2;
             }
+        }
+    }
+
+    {
+        size_t selectedCount = 0;
+
+        for (size_t i = 0; i < count; i++) {
+            if (selected == NULL || selected[i] != 0) {
+                selectedCount++;
+            }
+        }
+        progressState.current = 0;
+        progressState.total = selectedCount;
+        if (noProgress == 0 && selectedCount > 0 &&
+            isatty(STDERR_FILENO) != 0) {
+            runOptions.progress = showProgress;
+            runOptions.progressContext = &progressState;
         }
     }
 
@@ -819,7 +902,16 @@ int main(int argc, char **argv) {
         }
         if (lkRunTestCase(testCase, &runOptions, &samples) != 0) {
             failures++;
+            if (runOptions.progress != NULL) {
+                clearProgressLine();
+                progressState.current++;
+            }
             continue;
+        }
+
+        if (runOptions.progress != NULL) {
+            clearProgressLine();
+            progressState.current++;
         }
 
         if (format == LkFormatJson) {
