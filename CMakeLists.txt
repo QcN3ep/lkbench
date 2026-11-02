@@ -22,6 +22,10 @@ add_library(ymlparser STATIC third/ymlparser/yml_impl.c)
 target_include_directories(ymlparser SYSTEM PUBLIC third/ymlparser)
 target_compile_options(ymlparser PRIVATE -w)
 
+add_library(minicbor STATIC third/minicbor/minicbor_impl.c)
+target_include_directories(minicbor SYSTEM PUBLIC third/minicbor)
+target_compile_options(minicbor PRIVATE -w)
+
 add_executable(lkbench
     src/main.c
     src/measure.c
@@ -30,7 +34,7 @@ add_executable(lkbench
     ${LK_TEST_SOURCES})
 
 target_include_directories(lkbench PRIVATE src)
-target_link_libraries(lkbench PRIVATE yyjson m xml ymlparser)
+target_link_libraries(lkbench PRIVATE yyjson m xml ymlparser minicbor)
 target_compile_definitions(lkbench PRIVATE
     _POSIX_C_SOURCE=200809L
     LKBENCH_VERSION="${PROJECT_VERSION}")

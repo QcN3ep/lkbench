@@ -5,6 +5,7 @@
 #include <YMLParser.h>
 #include <errno.h>
 #include <getopt.h>
+#include <minicbor.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@ enum LkFormat {
     LkFormatJson,
     LkFormatXml,
     LkFormatYaml,
+    LkFormatCbor,
 };
 
 struct TextColumn {
@@ -67,6 +69,10 @@ static int parseFormat(const char *value, enum LkFormat *format) {
     }
     if (strcmp(value, "yaml") == 0 || strcmp(value, "yml") == 0) {
         *format = LkFormatYaml;
+        return 0;
+    }
+    if (strcmp(value, "cbor") == 0) {
+        *format = LkFormatCbor;
         return 0;
     }
     return -1;
@@ -512,6 +518,50 @@ static int appendYamlResult(YMLValue *root, const struct LkTestCase *testCase,
     return 0;
 }
 
+static int appendCborResult(mcbor_encoder_t *encoder,
+                            const struct LkTestCase *testCase,
+                            const struct LkSamples *samples,
+                            const char *filter) {
+    size_t metricCount = 0;
+
+    for (size_t i = 0; i < testCase->metricCount; i++) {
+        if (metricSelected(testCase->metrics[i].name, filter)) {
+            metricCount++;
+        }
+    }
+
+    if (mcbor_encode_map_start(encoder, 3) != MCBOR_OK ||
+        mcbor_encode_text_cstr(encoder, "id") != MCBOR_OK ||
+        mcbor_encode_text_cstr(encoder, testCase->id) != MCBOR_OK ||
+        mcbor_encode_text_cstr(encoder, "samples") != MCBOR_OK ||
+        mcbor_encode_uint(encoder, (mcbor_uint64_t)samples->count) !=
+            MCBOR_OK ||
+        mcbor_encode_text_cstr(encoder, "metrics") != MCBOR_OK ||
+        mcbor_encode_array_start(encoder, metricCount) != MCBOR_OK) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < testCase->metricCount; i++) {
+        const struct LkMetric *metric = &testCase->metrics[i];
+
+        if (!metricSelected(metric->name, filter)) {
+            continue;
+        }
+        if (mcbor_encode_map_start(encoder, 3) != MCBOR_OK ||
+            mcbor_encode_text_cstr(encoder, "name") != MCBOR_OK ||
+            mcbor_encode_text_cstr(encoder, metric->name) != MCBOR_OK ||
+            mcbor_encode_text_cstr(encoder, "unit") != MCBOR_OK ||
+            mcbor_encode_text_cstr(encoder, metric->unit) != MCBOR_OK ||
+            mcbor_encode_text_cstr(encoder, "value") != MCBOR_OK ||
+            mcbor_encode_float64(encoder, metric->compute(samples)) !=
+                MCBOR_OK) {
+            return -1;
+        }
+    }
+
+    return mcbor_encoder_error(encoder) == MCBOR_OK ? 0 : -1;
+}
+
 static size_t maxIdWidth(void) {
     size_t count = lkTestCaseCount();
     size_t width = 0;
@@ -564,6 +614,8 @@ int main(int argc, char **argv) {
     yyjson_mut_val *jsonResults = NULL;
     XMLNode *xmlRoot = NULL;
     YMLValue *yamlRoot = NULL;
+    mcbor_arena_t cborArena;
+    mcbor_encoder_t cborEncoder;
     int failures = 0;
 
     opterr = 0;
@@ -717,6 +769,17 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    if (format == LkFormatCbor) {
+        mcbor_arena_init(&cborArena);
+        mcbor_encoder_init_dynamic(&cborEncoder, &cborArena);
+        if (mcbor_encode_array_start_indef(&cborEncoder) != MCBOR_OK) {
+            fprintf(stderr, "%s: failed to build CBOR output\n", program);
+            mcbor_encoder_destroy(&cborEncoder);
+            mcbor_arena_destroy(&cborArena);
+            free(selected);
+            return 1;
+        }
+    }
 
     idWidth = maxIdWidth();
     if (format == LkFormatText &&
@@ -786,6 +849,16 @@ int main(int argc, char **argv) {
                 YMLDestroy(yamlRoot);
                 return 1;
             }
+        } else if (format == LkFormatCbor) {
+            if (appendCborResult(&cborEncoder, testCase, &samples,
+                                 metricFilter) != 0) {
+                fprintf(stderr, "%s: failed to build CBOR output\n", program);
+                lkFreeSamples(&samples);
+                free(selected);
+                mcbor_encoder_destroy(&cborEncoder);
+                mcbor_arena_destroy(&cborArena);
+                return 1;
+            }
         } else if (textGroup != NULL && textGroup->columnCount > 0) {
             printTextRow(testCase, &samples, idWidth, textGroup->columns,
                          textGroup->columnCount);
@@ -811,6 +884,38 @@ int main(int argc, char **argv) {
     if (format == LkFormatYaml) {
         YMLWriteStream(yamlRoot, stdout);
         YMLDestroy(yamlRoot);
+    }
+
+    if (format == LkFormatCbor) {
+        const unsigned char *data;
+        size_t length;
+
+        if (mcbor_encode_break(&cborEncoder) != MCBOR_OK ||
+            mcbor_encoder_error(&cborEncoder) != MCBOR_OK) {
+            fprintf(stderr, "%s: failed to build CBOR output\n", program);
+            mcbor_encoder_destroy(&cborEncoder);
+            mcbor_arena_destroy(&cborArena);
+            free(selected);
+            return 1;
+        }
+        data = mcbor_encoder_data(&cborEncoder);
+        length = mcbor_encoder_len(&cborEncoder);
+        if (length > 0 && fwrite(data, 1, length, stdout) != length) {
+            fprintf(stderr, "%s: failed to write CBOR output\n", program);
+            mcbor_encoder_destroy(&cborEncoder);
+            mcbor_arena_destroy(&cborArena);
+            free(selected);
+            return 1;
+        }
+        if (fflush(stdout) != 0) {
+            fprintf(stderr, "%s: failed to flush CBOR output\n", program);
+            mcbor_encoder_destroy(&cborEncoder);
+            mcbor_arena_destroy(&cborArena);
+            free(selected);
+            return 1;
+        }
+        mcbor_encoder_destroy(&cborEncoder);
+        mcbor_arena_destroy(&cborArena);
     }
 
     if (format == LkFormatJson) {
