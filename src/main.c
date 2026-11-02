@@ -2,6 +2,7 @@
 
 #include "lkbench.h"
 
+#include <YMLParser.h>
 #include <errno.h>
 #include <getopt.h>
 #include <stdint.h>
@@ -21,6 +22,7 @@ enum LkFormat {
     LkFormatText,
     LkFormatJson,
     LkFormatXml,
+    LkFormatYaml,
 };
 
 struct TextColumn {
@@ -39,9 +41,8 @@ static void printUsage(FILE *stream, const char *program) {
     fprintf(
         stream,
         "  -b, --bench <selector> Run tests matching selector (repeatable)\n");
-    fprintf(
-        stream,
-        "  -f, --format <format>  Output format: text (default), json, xml\n");
+    fprintf(stream, "  -f, --format <format>  Output format: text (default), "
+                    "json, xml, yaml\n");
     fprintf(stream, "  -w, --warmup <duration>  Warmup time (default 100ms)\n");
     fprintf(stream,
             "  -n, --samples <count>    Samples per test (default 100000)\n");
@@ -62,6 +63,10 @@ static int parseFormat(const char *value, enum LkFormat *format) {
     }
     if (strcmp(value, "xml") == 0) {
         *format = LkFormatXml;
+        return 0;
+    }
+    if (strcmp(value, "yaml") == 0 || strcmp(value, "yml") == 0) {
+        *format = LkFormatYaml;
         return 0;
     }
     return -1;
@@ -465,6 +470,48 @@ static int appendXmlResult(XMLNode *root, const struct LkTestCase *testCase,
     return 0;
 }
 
+static int appendYamlResult(YMLValue *root, const struct LkTestCase *testCase,
+                            const struct LkSamples *samples,
+                            const char *filter) {
+    YMLValue *test = YMLCreate(NULL);
+    YMLValue *metrics = YMLCreateArr(NULL);
+
+    if (test == NULL || metrics == NULL) {
+        YMLDestroy(test);
+        YMLDestroy(metrics);
+        return -1;
+    }
+
+    YMLMapAdd(test, "id", testCase->id);
+    YMLMapAdd(test, "samples", (long long)samples->count);
+
+    for (size_t i = 0; i < testCase->metricCount; i++) {
+        const struct LkMetric *metric = &testCase->metrics[i];
+        YMLValue *entry;
+
+        if (!metricSelected(metric->name, filter)) {
+            continue;
+        }
+        entry = YMLCreate(NULL);
+        if (entry == NULL) {
+            YMLDestroy(test);
+            YMLDestroy(metrics);
+            return -1;
+        }
+        YMLMapAdd(entry, "name", metric->name);
+        YMLMapAdd(entry, "unit", metric->unit);
+        YMLMapAdd(entry, "value", metric->compute(samples));
+        YMLArrPush(metrics, entry);
+        YMLDestroy(entry);
+    }
+
+    YMLMapAdd(test, "metrics", metrics);
+    YMLDestroy(metrics);
+    YMLArrPush(root, test);
+    YMLDestroy(test);
+    return 0;
+}
+
 static size_t maxIdWidth(void) {
     size_t count = lkTestCaseCount();
     size_t width = 0;
@@ -516,6 +563,7 @@ int main(int argc, char **argv) {
     yyjson_mut_doc *jsonDoc = NULL;
     yyjson_mut_val *jsonResults = NULL;
     XMLNode *xmlRoot = NULL;
+    YMLValue *yamlRoot = NULL;
     int failures = 0;
 
     opterr = 0;
@@ -661,6 +709,14 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    if (format == LkFormatYaml) {
+        yamlRoot = YMLCreateArr(NULL);
+        if (yamlRoot == NULL) {
+            fprintf(stderr, "%s: out of memory\n", program);
+            free(selected);
+            return 1;
+        }
+    }
 
     idWidth = maxIdWidth();
     if (format == LkFormatText &&
@@ -721,6 +777,15 @@ int main(int argc, char **argv) {
                 xml_node_free(xmlRoot);
                 return 1;
             }
+        } else if (format == LkFormatYaml) {
+            if (appendYamlResult(yamlRoot, testCase, &samples, metricFilter) !=
+                0) {
+                fprintf(stderr, "%s: failed to build YAML output\n", program);
+                lkFreeSamples(&samples);
+                free(selected);
+                YMLDestroy(yamlRoot);
+                return 1;
+            }
         } else if (textGroup != NULL && textGroup->columnCount > 0) {
             printTextRow(testCase, &samples, idWidth, textGroup->columns,
                          textGroup->columnCount);
@@ -741,6 +806,11 @@ int main(int argc, char **argv) {
         printf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n%s\n", xml->str);
         xml_string_free(xml);
         xml_node_free(xmlRoot);
+    }
+
+    if (format == LkFormatYaml) {
+        YMLWriteStream(yamlRoot, stdout);
+        YMLDestroy(yamlRoot);
     }
 
     if (format == LkFormatJson) {

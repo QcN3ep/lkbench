@@ -18,6 +18,10 @@ add_library(xml STATIC third/xml.h/xml_impl.c)
 target_include_directories(xml SYSTEM PUBLIC third/xml.h)
 target_compile_options(xml PRIVATE -w)
 
+add_library(ymlparser STATIC third/ymlparser/yml_impl.c)
+target_include_directories(ymlparser SYSTEM PUBLIC third/ymlparser)
+target_compile_options(ymlparser PRIVATE -w)
+
 add_executable(lkbench
     src/main.c
     src/measure.c
@@ -26,7 +30,7 @@ add_executable(lkbench
     ${LK_TEST_SOURCES})
 
 target_include_directories(lkbench PRIVATE src)
-target_link_libraries(lkbench PRIVATE yyjson m xml)
+target_link_libraries(lkbench PRIVATE yyjson m xml ymlparser)
 target_compile_definitions(lkbench PRIVATE
     _POSIX_C_SOURCE=200809L
     LKBENCH_VERSION="${PROJECT_VERSION}")
