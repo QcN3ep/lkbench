@@ -680,6 +680,7 @@ int main(int argc, char **argv) {
     mcbor_arena_t cborArena;
     mcbor_encoder_t cborEncoder;
     int failures = 0;
+    int skipped = 0;
 
     opterr = 0;
     while ((option = getopt_long(argc, argv, ":hlvb:f:w:n:s:q", options,
@@ -900,13 +901,26 @@ int main(int argc, char **argv) {
                                groupName);
             }
         }
-        if (lkRunTestCase(testCase, &runOptions, &samples) != 0) {
-            failures++;
-            if (runOptions.progress != NULL) {
-                clearProgressLine();
-                progressState.current++;
+        {
+            int runResult = lkRunTestCase(testCase, &runOptions, &samples);
+
+            if (runResult == LK_TEST_SKIPPED) {
+                skipped++;
+                if (runOptions.progress != NULL) {
+                    clearProgressLine();
+                    progressState.current++;
+                }
+                fprintf(stderr, "%s: %s: skipped\n", program, testCase->id);
+                continue;
             }
-            continue;
+            if (runResult != 0) {
+                failures++;
+                if (runOptions.progress != NULL) {
+                    clearProgressLine();
+                    progressState.current++;
+                }
+                continue;
+            }
         }
 
         if (runOptions.progress != NULL) {
@@ -1022,6 +1036,10 @@ int main(int argc, char **argv) {
         puts(json);
         free(json);
         yyjson_mut_doc_free(jsonDoc);
+    }
+
+    if (skipped > 0) {
+        fprintf(stderr, "%s: %d test(s) skipped\n", program, skipped);
     }
 
     free(selected);

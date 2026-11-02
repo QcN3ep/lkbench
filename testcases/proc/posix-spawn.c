@@ -6,8 +6,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern char **environ;
-
 static volatile long sink;
 
 static int start(void) { return 0; }

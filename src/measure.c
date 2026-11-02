@@ -114,6 +114,10 @@ int lkRunTestCase(const struct LkTestCase *testCase,
     samples->count = 0;
     samples->elapsedNs = 0;
 
+    if (testCase->probe != NULL && testCase->probe() != 0) {
+        return LK_TEST_SKIPPED;
+    }
+
     if (options->sampleCount == 0 ||
         options->sampleCount > LK_MAX_SAMPLE_COUNT) {
         fprintf(stderr, "lkbench: %s: invalid sample count\n", testCase->id);

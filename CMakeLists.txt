@@ -10,6 +10,10 @@ set(CMAKE_C_EXTENSIONS OFF)
 file(GLOB_RECURSE LK_TEST_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/testcases/*.c")
 
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(FILTER LK_TEST_SOURCES EXCLUDE REGEX "/testcases/linux/")
+endif()
+
 add_library(yyjson STATIC third/yyjson/yyjson.c)
 target_include_directories(yyjson SYSTEM PUBLIC third/yyjson)
 target_compile_options(yyjson PRIVATE -w)
@@ -36,6 +40,7 @@ add_executable(lkbench
 target_include_directories(lkbench PRIVATE src)
 target_link_libraries(lkbench PRIVATE yyjson m xml ymlparser minicbor)
 target_compile_definitions(lkbench PRIVATE
+    _GNU_SOURCE
     _POSIX_C_SOURCE=200809L
     LKBENCH_VERSION="${PROJECT_VERSION}")
 target_compile_options(lkbench PRIVATE -Wall -Wextra -Wpedantic)

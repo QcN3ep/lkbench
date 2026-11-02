@@ -45,7 +45,10 @@ struct LkTestCase {
     void (*reset)(void);
     const struct LkMetric *metrics;
     size_t metricCount;
+    int (*probe)(void);
 };
+
+#define LK_TEST_SKIPPED 2
 
 void lkRegisterTestCase(struct LkTestCase *testCase);
 void lkRegisterMetrics(const char *file, const struct LkMetric *metrics,
@@ -108,6 +111,18 @@ double lkMetricLatencyStddev(const struct LkSamples *samples);
         .test = test,                                                          \
         .terminate = terminate,                                                \
         .reset = (resetFn),                                                    \
+    };                                                                         \
+    static void LK_CONSTRUCTOR lkTestAutoRegister(void) {                      \
+        lkRegisterTestCase(&lkTestCase);                                       \
+    }
+
+#define LK_TEST_OPTIONAL(probeFn)                                              \
+    static struct LkTestCase lkTestCase = {                                    \
+        .file = __FILE__,                                                      \
+        .start = start,                                                        \
+        .test = test,                                                          \
+        .terminate = terminate,                                                \
+        .probe = (probeFn),                                                    \
     };                                                                         \
     static void LK_CONSTRUCTOR lkTestAutoRegister(void) {                      \
         lkRegisterTestCase(&lkTestCase);                                       \
